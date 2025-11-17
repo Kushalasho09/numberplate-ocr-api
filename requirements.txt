@@ -1,7 +1,17 @@
-fastapi
-uvicorn
-opencv-python
-easyocr
-imutils
-python-multipart
-numpy
+fastapi==0.110.2
+uvicorn==0.29.0
+
+opencv-python-headless==4.8.1.78
+numpy==1.26.4
+pillow==10.2.0
+
+easyocr==1.7.1
+imutils==0.5.4
+python-multipart==0.0.9
+
+super-image==0.3.5
+
+torch==2.1.0+cpu
+torchvision==0.16.0+cpu
+torchaudio==2.1.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
