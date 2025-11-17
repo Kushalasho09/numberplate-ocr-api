@@ -1,60 +1,108 @@
-from fastapi import FastAPI, UploadFile, File
 import cv2
-import numpy as np
-import easyocr
-import imutils
 import base64
+import numpy as np
+from fastapi import FastAPI, File, UploadFile
+from PIL import Image
+from io import BytesIO
+from super_image import EdsrModel, ImageLoader
 
+# ---------------------------
+# Create FastAPI App
+# ---------------------------
 app = FastAPI()
-reader = easyocr.Reader(['en'])
 
-def extract_plate(image_bytes):
-    np_img = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+# ---------------------------
+# Load Super Resolution Model
+# ---------------------------
+# IMPORTANT: Load only once (fast & Render-safe)
+model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 
+# ---------------------------
+# Helper Functions
+# ---------------------------
+def enhance_image(pil_img):
+    """Enhance image using ESRGAN (CPU)"""
+    img = ImageLoader.load_image(pil_img)
+    preds = model(img)
+    out = ImageLoader.save_image(preds)
+    return out
+
+def to_base64(pil_img):
+    """Convert PIL Image to Base64"""
+    buffer = BytesIO()
+    pil_img.save(buffer, format="JPEG")
+    return base64.b64encode(buffer.getvalue()).decode()
+
+
+# ---------------------------
+# Root Check Endpoint
+# ---------------------------
+@app.get("/")
+def home():
+    return {"status": "running", "message": "OCR + Enhancement API working"}
+
+
+# ---------------------------
+# Main Processing Route
+# ---------------------------
+@app.post("/process")
+async def process_image(file: UploadFile = File(...)):
+    # Read uploaded image
+    contents = await file.read()
+    img_array = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+    if img is None:
+        return {"error": "Invalid image"}
+
+    # Create PIL for full-image enhancement
+    original_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    # ----------------------------------------------
+    #          NUMBER PLATE DETECTION
+    # ----------------------------------------------
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    bfilter = cv2.bilateralFilter(gray, 11, 17, 17)
-    edged = cv2.Canny(bfilter, 30, 200)
+    blur = cv2.bilateralFilter(gray, 11, 17, 17)
+    edged = cv2.Canny(blur, 30, 200)
 
-    keypoints = cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    contours = imutils.grab_contours(keypoints)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
+    cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:10]
 
-    location = None
-    for contour in contours:
-        approx = cv2.approxPolyDP(contour, 10, True)
+    plate_area = None
+    for c in cnts:
+        peri = cv2.arcLength(c, True)
+        approx = cv2.approxPolyDP(c, 0.018 * peri, True)
+
         if len(approx) == 4:
-            location = approx
+            plate_area = approx
             break
 
-    if location is None:
-        return None, None, "Plate Not Found"
+    if plate_area is None:
+        return {"error": "Number plate not detected"}
 
-    mask = np.zeros(gray.shape, np.uint8)
-    cv2.drawContours(mask, [location], 0, 255, -1)
-    new_img = cv2.bitwise_and(img, img, mask=mask)
+    # Crop number plate
+    x, y, w, h = cv2.boundingRect(plate_area)
+    plate_crop = img[y:y+h, x:x+w]
+    plate_pil = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
 
-    (x, y) = np.where(mask == 255)
-    (x1, y1) = (np.min(x), np.min(y))
-    (x2, y2) = (np.max(x), np.max(y))
+    # ----------------------------------------------
+    #          IMAGE ENHANCEMENT
+    # ----------------------------------------------
+    enhanced_plate = enhance_image(plate_pil)          # cropped plate
+    enhanced_vehicle = enhance_image(original_pil)     # whole image
 
-    cropped = gray[x1:x2+1, y1:y2+1]
-    result = reader.readtext(cropped)
-
-    text = result[0][-2] if result else "Unable to read"
-
-    # convert cropped to base64 (optional)
-    _, buffer = cv2.imencode('.jpg', cropped)
-    cropped_b64 = base64.b64encode(buffer).decode()
-
-    return cropped_b64, text
-
-@app.post("/extract")
-async def extract(file: UploadFile = File(...)):
-    img_bytes = await file.read()
-    cropped, text = extract_plate(img_bytes)
-
+    # ----------------------------------------------
+    #          RETURN 2 IMAGES (BASE64)
+    # ----------------------------------------------
     return {
-        "number_plate": text,
-        "cropped_image": cropped
+        "number_plate": to_base64(enhanced_plate),
+        "vehicle": to_base64(enhanced_vehicle),
     }
+
+
+# ---------------------------
+# Render Deployment Note
+# (DO NOT CHANGE ANYTHING HERE)
+# ---------------------------
+# Uvicorn will be launched by Render using:
+# uvicorn main:app --host 0.0.0.0 --port $PORT
