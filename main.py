@@ -4,30 +4,49 @@ import numpy as np
 from fastapi import FastAPI, File, UploadFile
 from PIL import Image
 from io import BytesIO
-import torch
-from torchsr.models import carn_m  # lightweight SR model
-import easyocr
+import gc
 
 # --------------- FastAPI setup ---------------
 app = FastAPI()
 
-# --------------- Load SR model ---------------
-device = torch.device("cpu")
-sr_model = carn_m(scale=2, pretrained=True).to(device)
-sr_model.eval()
+# --------------- Lazy-loaded models ---------------
+sr_model = None
+ocr_reader = None
+device = None
 
-# --------------- OCR Reader ---------------
-ocr_reader = easyocr.Reader(['en'], gpu=False)
+def get_sr_model():
+    global sr_model, device
+    if sr_model is None:
+        import torch
+        from torchsr.models import carn_m
+        device = torch.device("cpu")
+        sr_model = carn_m(scale=2, pretrained=True).to(device)
+        sr_model.eval()
+    return sr_model
+
+def get_ocr_reader():
+    global ocr_reader
+    if ocr_reader is None:
+        import easyocr
+        ocr_reader = easyocr.Reader(['en'], gpu=False)
+    return ocr_reader
 
 # --------------- Helper Functions ---------------
-def enhance_image(pil_img: Image.Image) -> Image.Image:
+MAX_SIZE = 1024  # max dimension for resizing
+
+def resize_image(pil_img: Image.Image) -> Image.Image:
+    pil_img.thumbnail((MAX_SIZE, MAX_SIZE))
+    return pil_img
+
+def enhance_image(pil_img: Image.Image, model) -> Image.Image:
     """Enhance a PIL image using a lightweight SR model."""
+    import torch
     # Convert PIL to numpy, normalize
     img_np = np.array(pil_img.convert("RGB")).astype(np.float32) / 255.0
     # Convert to tensor (C, H, W)
     img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(device)
     with torch.no_grad():
-        out_t = sr_model(img_t)
+        out_t = model(img_t)
     # Convert back to numpy in uint8
     out_np = out_t.squeeze(0).permute(1, 2, 0).cpu().numpy()
     out_np = np.clip(out_np * 255.0, 0, 255).astype(np.uint8)
@@ -38,10 +57,10 @@ def to_base64(pil_img: Image.Image) -> str:
     pil_img.save(buffer, format="JPEG")
     return base64.b64encode(buffer.getvalue()).decode()
 
-def read_plate_text(pil_img: Image.Image) -> str:
+def read_plate_text(pil_img: Image.Image, reader) -> str:
     """Extract text from plate using EasyOCR."""
     arr = np.array(pil_img)
-    result = ocr_reader.readtext(arr)
+    result = reader.readtext(arr)
     texts = [item[1] for item in result]
     return " ".join(texts) if texts else ""
 
@@ -53,14 +72,16 @@ def home():
 @app.post("/process")
 async def process_image(file: UploadFile = File(...)):
     try:
+        # Read uploaded image
         contents = await file.read()
         img_array = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
             return {"status": 400, "message": "Invalid image", "data": {}}
 
-        # Get PIL version of full image
+        # Convert to PIL and resize
         original_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        original_pil = resize_image(original_pil)
 
         # Number plate detection (OpenCV)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -84,23 +105,29 @@ async def process_image(file: UploadFile = File(...)):
         x, y, w, h = cv2.boundingRect(plate_area)
         plate_crop = img[y:y+h, x:x+w]
         plate_pil = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
+        plate_pil = resize_image(plate_pil)
 
-        # Enhance both images
-        enhanced_plate = enhance_image(plate_pil)
-        enhanced_vehicle = enhance_image(original_pil)
+        # Enhance images
+        sr = get_sr_model()
+        enhanced_plate = enhance_image(plate_pil, sr)
+        enhanced_vehicle = enhance_image(original_pil, sr)
 
-        # OCR to read plate text
-        plate_text = read_plate_text(plate_pil)
+        # OCR
+        reader = get_ocr_reader()
+        plate_text = read_plate_text(plate_pil, reader)
 
-        return {
-            "status": 200,
-            "message": "Image enhanced and text recognized",
-            "data": {
-                "number_plate": to_base64(enhanced_plate),
-                "vehicle": to_base64(enhanced_vehicle),
-                "plate_text": plate_text
-            }
+        # Convert to base64
+        response_data = {
+            "number_plate": to_base64(enhanced_plate),
+            "vehicle": to_base64(enhanced_vehicle),
+            "plate_text": plate_text
         }
+
+        # Free memory
+        del img, original_pil, plate_pil, plate_crop, enhanced_plate, enhanced_vehicle
+        gc.collect()
+
+        return {"status": 200, "message": "Image enhanced and text recognized", "data": response_data}
 
     except Exception as e:
         return {"status": 500, "message": f"Internal server error: {str(e)}", "data": {}}
