@@ -22,10 +22,20 @@ model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 # ---------------------------
 def enhance_image(pil_img):
     """Enhance image using ESRGAN (CPU)"""
+    pil_img = pil_img.convert("RGB")
     img = ImageLoader.load_image(pil_img)
+    img = img.astype('uint8') if img.dtype != 'uint8' else img
     preds = model(img)
     out = ImageLoader.save_image(preds)
     return out
+
+
+#def enhance_image(pil_img):
+ #   """Enhance image using ESRGAN (CPU)"""
+  #  img = ImageLoader.load_image(pil_img)
+   # preds = model(img)
+    #out = ImageLoader.save_image(preds)
+    #return out
 
 def to_base64(pil_img):
     """Convert PIL Image to Base64"""
