@@ -14,7 +14,7 @@ app = FastAPI()
 # ---------------------------
 # Load Super Resolution Model
 # ---------------------------
-# IMPORTANT: Load only once (fast & Render-safe)
+# Load once to avoid repeated downloads
 model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 
 # ---------------------------
@@ -22,109 +22,103 @@ model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 # ---------------------------
 def enhance_image(pil_img: Image.Image) -> Image.Image:
     """
-    Enhance a PIL image using the ESRGAN model from super_image.
-    Input must be a PIL.Image.
-    Returns enhanced PIL.Image.
+    Enhance a PIL image using the EdsrModel from super_image.
+    Ensures proper dtype and channel format.
     """
-    # Make sure the input is a PIL Image
+    # Ensure PIL image
     if not isinstance(pil_img, Image.Image):
         pil_img = Image.fromarray(pil_img)
 
-    # Load image (super_image expects PIL Image)
+    # Convert to RGB
+    pil_img = pil_img.convert("RGB")
+
+    # Ensure dtype uint8
+    img_np = np.array(pil_img).astype(np.uint8)
+    pil_img = Image.fromarray(img_np)
+
+    # Load into super_image tensor
     tensor_img = ImageLoader.load_image(pil_img)
 
-    # Run super-resolution model
+    # Run model
     preds = model(tensor_img)
 
     # Convert back to PIL Image
     enhanced_pil = ImageLoader.save_image(preds)
-
     return enhanced_pil
 
-
-#def enhance_image(pil_img):
- #   """Enhance image using ESRGAN (CPU)"""
-  #  img = ImageLoader.load_image(pil_img)
-   # preds = model(img)
-    #out = ImageLoader.save_image(preds)
-    #return out
-
-def to_base64(pil_img):
-    """Convert PIL Image to Base64"""
+def to_base64(pil_img: Image.Image) -> str:
+    """Convert PIL Image to Base64 string"""
     buffer = BytesIO()
     pil_img.save(buffer, format="JPEG")
     return base64.b64encode(buffer.getvalue()).decode()
-
 
 # ---------------------------
 # Root Check Endpoint
 # ---------------------------
 @app.get("/")
 def home():
-    return {"status": "running", "message": "OCR + Enhancement API working"}
-
+    return {"status": 200, "message": "OCR + Enhancement API running"}
 
 # ---------------------------
 # Main Processing Route
 # ---------------------------
 @app.post("/process")
 async def process_image(file: UploadFile = File(...)):
-    # Read uploaded image
-    contents = await file.read()
-    img_array = np.frombuffer(contents, np.uint8)
-    img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+    try:
+        # Read uploaded image
+        contents = await file.read()
+        img_array = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
 
-    if img is None:
-        return {"error": "Invalid image"}
+        if img is None:
+            return {"status": 400, "message": "Invalid image", "data": {}}
 
-    # Create PIL for full-image enhancement
-    original_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        # PIL version of the full image
+        original_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-    # ----------------------------------------------
-    #          NUMBER PLATE DETECTION
-    # ----------------------------------------------
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blur = cv2.bilateralFilter(gray, 11, 17, 17)
-    edged = cv2.Canny(blur, 30, 200)
+        # ------------------------------
+        # Number Plate Detection
+        # ------------------------------
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        blur = cv2.bilateralFilter(gray, 11, 17, 17)
+        edged = cv2.Canny(blur, 30, 200)
 
-    cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:10]
+        cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)[:10]
 
-    plate_area = None
-    for c in cnts:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.018 * peri, True)
+        plate_area = None
+        for c in cnts:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.018 * peri, True)
+            if len(approx) == 4:
+                plate_area = approx
+                break
 
-        if len(approx) == 4:
-            plate_area = approx
-            break
+        if plate_area is None:
+            return {"status": 404, "message": "Number plate not detected", "data": {}}
 
-    if plate_area is None:
-        return {"error": "Number plate not detected"}
+        # Crop number plate
+        x, y, w, h = cv2.boundingRect(plate_area)
+        plate_crop = img[y:y+h, x:x+w]
+        plate_pil = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
 
-    # Crop number plate
-    x, y, w, h = cv2.boundingRect(plate_area)
-    plate_crop = img[y:y+h, x:x+w]
-    plate_pil = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
+        # ------------------------------
+        # Enhance Images
+        # ------------------------------
+        enhanced_plate = enhance_image(plate_pil)
+        enhanced_vehicle = enhance_image(original_pil)
 
-    # ----------------------------------------------
-    #          IMAGE ENHANCEMENT
-    # ----------------------------------------------
-    enhanced_plate = enhance_image(plate_pil)          # cropped plate
-    enhanced_vehicle = enhance_image(original_pil)     # whole image
+        # ------------------------------
+        # Return Base64 Images
+        # ------------------------------
+        return {
+            "status": 200,
+            "message": "Image enhanced successfully",
+            "data": {
+                "number_plate": to_base64(enhanced_plate),
+                "vehicle": to_base64(enhanced_vehicle)
+            }
+        }
 
-    # ----------------------------------------------
-    #          RETURN 2 IMAGES (BASE64)
-    # ----------------------------------------------
-    return {
-        "number_plate": to_base64(enhanced_plate),
-        "vehicle": to_base64(enhanced_vehicle),
-    }
-
-
-# ---------------------------
-# Render Deployment Note
-# (DO NOT CHANGE ANYTHING HERE)
-# ---------------------------
-# Uvicorn will be launched by Render using:
-# uvicorn main:app --host 0.0.0.0 --port $PORT
+    except Exception as e:
+        return {"status": 500, "message": f"Internal server error: {str(e)}", "data": {}}
