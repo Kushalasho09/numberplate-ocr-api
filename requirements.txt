@@ -1,12 +1,13 @@
-fastapi==0.110.2
-uvicorn==0.29.0
-opencv-python-headless==4.8.1.78
-numpy==1.26.4
-pillow>=10.2.0
-easyocr==1.7.1
-python-multipart==0.0.9
-torch==2.1.0+cpu
-torchvision==0.16.0+cpu
-torchaudio==2.1.0+cpu
-torchsr==0.1.1  # lightweight super-resolution models
+fastapi==0.110.2  
+uvicorn==0.29.0  
+opencv-python-headless==4.8.1.78  
+numpy==1.26.4  
+pillow>=10.2.0  
+easyocr==1.7.1  
+imutils==0.5.4  
+python-multipart==0.0.9  
+torch==2.1.0+cpu  
+torchvision==0.16.0+cpu  
+torchaudio==2.1.0+cpu  
+torchsr==1.0.4  # lightweight SR networks from PyPI :contentReference[oaicite:4]{index=4}  
 --extra-index-url https://download.pytorch.org/whl/cpu
