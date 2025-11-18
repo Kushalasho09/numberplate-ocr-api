@@ -14,7 +14,7 @@ app = FastAPI()
 # ---------------------------
 # Load Super Resolution Model
 # ---------------------------
-# Load once to avoid repeated downloads
+# Load only once
 model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 
 # ---------------------------
@@ -22,29 +22,28 @@ model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 # ---------------------------
 def enhance_image(pil_img: Image.Image) -> Image.Image:
     """
-    Enhance a PIL image using the EdsrModel from super_image.
-    Ensures proper dtype and channel format.
+    Enhance a PIL image using EdsrModel from super_image.
+    Ensures proper dtype and format to avoid dtype inference errors.
     """
-    # Ensure PIL image
+    # Ensure input is PIL
     if not isinstance(pil_img, Image.Image):
         pil_img = Image.fromarray(pil_img)
 
-    # Convert to RGB
+    # Convert to RGB and uint8
     pil_img = pil_img.convert("RGB")
+    pil_img = Image.fromarray(np.array(pil_img, dtype=np.uint8))
 
-    # Ensure dtype uint8
-    img_np = np.array(pil_img).astype(np.uint8)
-    pil_img = Image.fromarray(img_np)
-
-    # Load into super_image tensor
+    # Load image for super_image
     tensor_img = ImageLoader.load_image(pil_img)
 
-    # Run model
+    # Run super-resolution model
     preds = model(tensor_img)
 
-    # Convert back to PIL Image
+    # Convert back to PIL
     enhanced_pil = ImageLoader.save_image(preds)
+
     return enhanced_pil
+
 
 def to_base64(pil_img: Image.Image) -> str:
     """Convert PIL Image to Base64 string"""
@@ -52,12 +51,14 @@ def to_base64(pil_img: Image.Image) -> str:
     pil_img.save(buffer, format="JPEG")
     return base64.b64encode(buffer.getvalue()).decode()
 
+
 # ---------------------------
 # Root Check Endpoint
 # ---------------------------
 @app.get("/")
 def home():
     return {"status": 200, "message": "OCR + Enhancement API running"}
+
 
 # ---------------------------
 # Main Processing Route
@@ -73,12 +74,10 @@ async def process_image(file: UploadFile = File(...)):
         if img is None:
             return {"status": 400, "message": "Invalid image", "data": {}}
 
-        # PIL version of the full image
+        # Convert to PIL
         original_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-        # ------------------------------
-        # Number Plate Detection
-        # ------------------------------
+        # ---------- NUMBER PLATE DETECTION ----------
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         blur = cv2.bilateralFilter(gray, 11, 17, 17)
         edged = cv2.Canny(blur, 30, 200)
@@ -95,22 +94,18 @@ async def process_image(file: UploadFile = File(...)):
                 break
 
         if plate_area is None:
-            return {"status": 404, "message": "Number plate not detected", "data": {}}
+            return {"status": 400, "message": "Number plate not detected", "data": {}}
 
         # Crop number plate
         x, y, w, h = cv2.boundingRect(plate_area)
         plate_crop = img[y:y+h, x:x+w]
         plate_pil = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
 
-        # ------------------------------
-        # Enhance Images
-        # ------------------------------
-        enhanced_plate = enhance_image(plate_pil)
-        enhanced_vehicle = enhance_image(original_pil)
+        # ---------- IMAGE ENHANCEMENT ----------
+        enhanced_plate = enhance_image(plate_pil)          # cropped plate
+        enhanced_vehicle = enhance_image(original_pil)     # full image
 
-        # ------------------------------
-        # Return Base64 Images
-        # ------------------------------
+        # ---------- RETURN AS BASE64 ----------
         return {
             "status": 200,
             "message": "Image enhanced successfully",
