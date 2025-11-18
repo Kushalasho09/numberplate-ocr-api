@@ -4,10 +4,9 @@ opencv-python-headless==4.8.1.78
 numpy==1.26.4
 pillow>=10.2.0
 easyocr==1.7.1
-imutils==0.5.4
 python-multipart==0.0.9
-super-image==0.2.0
 torch==2.1.0+cpu
 torchvision==0.16.0+cpu
 torchaudio==2.1.0+cpu
+torchsr==0.1.1  # lightweight super-resolution models
 --extra-index-url https://download.pytorch.org/whl/cpu
