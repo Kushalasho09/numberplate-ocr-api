@@ -5,6 +5,7 @@ from fastapi import FastAPI, File, UploadFile
 from PIL import Image
 from io import BytesIO
 from super_image import EdsrModel, ImageLoader
+import easyocr
 
 # ---------------------------
 # Create FastAPI App
@@ -17,39 +18,18 @@ app = FastAPI()
 model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 
 # ---------------------------
+# Initialize OCR Reader
+# ---------------------------
+ocr_reader = easyocr.Reader(['en'], gpu=False)
+
+# ---------------------------
 # Helper Functions
 # ---------------------------
 def enhance_image(pil_img: Image.Image) -> Image.Image:
     """
     Enhance a PIL image using EdsrModel from super_image.
-    Ensures proper dtype and format to avoid dtype inference errors.
     """
-
-    # ---------------------------
-    # Old logic (commented out)
-    # ---------------------------
-    # # Ensure PIL
-    # if not isinstance(pil_img, Image.Image):
-    #     pil_img = Image.fromarray(pil_img)
-    #
-    # # Convert to RGB and force uint8
-    # pil_img = pil_img.convert("RGB")
-    # pil_img = Image.fromarray(np.array(pil_img, dtype=np.uint8))
-    #
-    # # Load image for super_image
-    # tensor_img = ImageLoader.load_image(pil_img)
-    #
-    # # Run model
-    # preds = model(tensor_img)
-    #
-    # # Convert back to PIL
-    # enhanced_pil = ImageLoader.save_image(preds)
-    #
-    # return enhanced_pil
-
-    # ---------------------------
-    # New logic (works with super_image v0.2.0)
-    # ---------------------------
+    # Ensure PIL
     if not isinstance(pil_img, Image.Image):
         pil_img = Image.fromarray(pil_img)
 
@@ -57,15 +37,14 @@ def enhance_image(pil_img: Image.Image) -> Image.Image:
     pil_img = pil_img.convert("RGB")
     pil_img = Image.fromarray(np.array(pil_img, dtype=np.uint8))
 
-    # Load image properly for super_image
+    # Load image for super_image
     tensor_img = ImageLoader.load_image(pil_img)
 
     # Run super-resolution model
     preds = model(tensor_img)
 
-    # Convert tensor to PIL (no output_file required)
+    # Convert tensor to PIL
     enhanced_pil = ImageLoader.tensor_to_pil(preds)
-
     return enhanced_pil
 
 
@@ -74,6 +53,15 @@ def to_base64(pil_img: Image.Image) -> str:
     buffer = BytesIO()
     pil_img.save(buffer, format="JPEG")
     return base64.b64encode(buffer.getvalue()).decode()
+
+
+def extract_text(pil_img: Image.Image) -> str:
+    """Extract text using EasyOCR"""
+    img_array = np.array(pil_img)
+    result = ocr_reader.readtext(img_array)
+    if result:
+        return " ".join([res[1] for res in result])
+    return ""
 
 
 # ---------------------------
@@ -134,6 +122,11 @@ async def process_image(file: UploadFile = File(...)):
         enhanced_vehicle = enhance_image(original_pil)
 
         # --------------------------
+        # Extract number plate text
+        # --------------------------
+        plate_text = extract_text(enhanced_plate)
+
+        # --------------------------
         # Return Base64 JSON
         # --------------------------
         return {
@@ -141,7 +134,8 @@ async def process_image(file: UploadFile = File(...)):
             "message": "Image enhanced successfully",
             "data": {
                 "number_plate": to_base64(enhanced_plate),
-                "vehicle": to_base64(enhanced_vehicle)
+                "vehicle": to_base64(enhanced_vehicle),
+                "plate_text": plate_text
             }
         }
 
