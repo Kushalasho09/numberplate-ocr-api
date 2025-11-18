@@ -21,13 +21,24 @@ model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 # Helper Functions
 # ---------------------------
 def enhance_image(pil_img):
-    """Enhance image using ESRGAN (CPU)"""
-    pil_img = pil_img.convert("RGB")
-    img = ImageLoader.load_image(pil_img)
-    img = img.astype('uint8') if img.dtype != 'uint8' else img
-    preds = model(img)
-    out = ImageLoader.save_image(preds)
-    return out
+    """
+    Enhance a PIL image using the ESRGAN model from super_image.
+    Ensures the image is converted to a proper numpy array (uint8) 
+    before feeding it to the model to avoid dtype errors.
+    """
+    # Convert PIL to numpy array with dtype uint8
+    img_np = np.array(pil_img).astype(np.uint8)
+
+    # Load image for the super_image model
+    tensor_img = ImageLoader.load_image(img_np)
+
+    # Run super-resolution model
+    preds = model(tensor_img)
+
+    # Convert back to PIL
+    enhanced_pil = ImageLoader.save_image(preds)
+
+    return enhanced_pil
 
 
 #def enhance_image(pil_img):
