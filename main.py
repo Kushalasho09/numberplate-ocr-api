@@ -24,7 +24,32 @@ def enhance_image(pil_img: Image.Image) -> Image.Image:
     Enhance a PIL image using EdsrModel from super_image.
     Ensures proper dtype and format to avoid dtype inference errors.
     """
-    # Ensure PIL
+
+    # ---------------------------
+    # Old logic (commented out)
+    # ---------------------------
+    # # Ensure PIL
+    # if not isinstance(pil_img, Image.Image):
+    #     pil_img = Image.fromarray(pil_img)
+    #
+    # # Convert to RGB and force uint8
+    # pil_img = pil_img.convert("RGB")
+    # pil_img = Image.fromarray(np.array(pil_img, dtype=np.uint8))
+    #
+    # # Load image for super_image
+    # tensor_img = ImageLoader.load_image(pil_img)
+    #
+    # # Run model
+    # preds = model(tensor_img)
+    #
+    # # Convert back to PIL
+    # enhanced_pil = ImageLoader.save_image(preds)
+    #
+    # return enhanced_pil
+
+    # ---------------------------
+    # New logic (works with super_image v0.2.0)
+    # ---------------------------
     if not isinstance(pil_img, Image.Image):
         pil_img = Image.fromarray(pil_img)
 
@@ -32,14 +57,14 @@ def enhance_image(pil_img: Image.Image) -> Image.Image:
     pil_img = pil_img.convert("RGB")
     pil_img = Image.fromarray(np.array(pil_img, dtype=np.uint8))
 
-    # Load image for super_image
+    # Load image properly for super_image
     tensor_img = ImageLoader.load_image(pil_img)
 
-    # Run model
+    # Run super-resolution model
     preds = model(tensor_img)
 
-    # Convert back to PIL
-    enhanced_pil = ImageLoader.save_image(preds)
+    # Convert tensor to PIL (no output_file required)
+    enhanced_pil = ImageLoader.tensor_to_pil(preds)
 
     return enhanced_pil
 
