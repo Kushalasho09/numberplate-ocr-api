@@ -14,7 +14,6 @@ app = FastAPI()
 # ---------------------------
 # Load Super Resolution Model
 # ---------------------------
-# Load only once
 model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 
 # ---------------------------
@@ -25,18 +24,18 @@ def enhance_image(pil_img: Image.Image) -> Image.Image:
     Enhance a PIL image using EdsrModel from super_image.
     Ensures proper dtype and format to avoid dtype inference errors.
     """
-    # Ensure input is PIL
+    # Ensure PIL
     if not isinstance(pil_img, Image.Image):
         pil_img = Image.fromarray(pil_img)
 
-    # Convert to RGB and uint8
+    # Convert to RGB and force uint8
     pil_img = pil_img.convert("RGB")
     pil_img = Image.fromarray(np.array(pil_img, dtype=np.uint8))
 
     # Load image for super_image
     tensor_img = ImageLoader.load_image(pil_img)
 
-    # Run super-resolution model
+    # Run model
     preds = model(tensor_img)
 
     # Convert back to PIL
@@ -53,7 +52,7 @@ def to_base64(pil_img: Image.Image) -> str:
 
 
 # ---------------------------
-# Root Check Endpoint
+# Root Endpoint
 # ---------------------------
 @app.get("/")
 def home():
@@ -74,10 +73,12 @@ async def process_image(file: UploadFile = File(...)):
         if img is None:
             return {"status": 400, "message": "Invalid image", "data": {}}
 
-        # Convert to PIL
+        # Full vehicle image as PIL
         original_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-        # ---------- NUMBER PLATE DETECTION ----------
+        # --------------------------
+        # Number plate detection
+        # --------------------------
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         blur = cv2.bilateralFilter(gray, 11, 17, 17)
         edged = cv2.Canny(blur, 30, 200)
@@ -96,16 +97,20 @@ async def process_image(file: UploadFile = File(...)):
         if plate_area is None:
             return {"status": 400, "message": "Number plate not detected", "data": {}}
 
-        # Crop number plate
+        # Crop number plate and convert to PIL
         x, y, w, h = cv2.boundingRect(plate_area)
         plate_crop = img[y:y+h, x:x+w]
         plate_pil = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
 
-        # ---------- IMAGE ENHANCEMENT ----------
-        enhanced_plate = enhance_image(plate_pil)          # cropped plate
-        enhanced_vehicle = enhance_image(original_pil)     # full image
+        # --------------------------
+        # Enhance images safely
+        # --------------------------
+        enhanced_plate = enhance_image(plate_pil)
+        enhanced_vehicle = enhance_image(original_pil)
 
-        # ---------- RETURN AS BASE64 ----------
+        # --------------------------
+        # Return Base64 JSON
+        # --------------------------
         return {
             "status": 200,
             "message": "Image enhanced successfully",
@@ -116,4 +121,8 @@ async def process_image(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        return {"status": 500, "message": f"Internal server error: {str(e)}", "data": {}}
+        return {
+            "status": 500,
+            "message": f"Internal server error: {str(e)}",
+            "data": {}
+        }
