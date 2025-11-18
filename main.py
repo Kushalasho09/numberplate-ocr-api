@@ -32,7 +32,7 @@ def get_ocr_reader():
     return ocr_reader
 
 # --------------- Helper Functions ---------------
-MAX_SIZE = 1024  # max dimension for resizing
+MAX_SIZE = 512  # smaller to save memory
 
 def resize_image(pil_img: Image.Image) -> Image.Image:
     pil_img.thumbnail((MAX_SIZE, MAX_SIZE))
@@ -41,13 +41,10 @@ def resize_image(pil_img: Image.Image) -> Image.Image:
 def enhance_image(pil_img: Image.Image, model) -> Image.Image:
     """Enhance a PIL image using a lightweight SR model."""
     import torch
-    # Convert PIL to numpy, normalize
     img_np = np.array(pil_img.convert("RGB")).astype(np.float32) / 255.0
-    # Convert to tensor (C, H, W)
     img_t = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(device)
     with torch.no_grad():
         out_t = model(img_t)
-    # Convert back to numpy in uint8
     out_np = out_t.squeeze(0).permute(1, 2, 0).cpu().numpy()
     out_np = np.clip(out_np * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(out_np)
@@ -58,7 +55,6 @@ def to_base64(pil_img: Image.Image) -> str:
     return base64.b64encode(buffer.getvalue()).decode()
 
 def read_plate_text(pil_img: Image.Image, reader) -> str:
-    """Extract text from plate using EasyOCR."""
     arr = np.array(pil_img)
     result = reader.readtext(arr)
     texts = [item[1] for item in result]
@@ -79,11 +75,7 @@ async def process_image(file: UploadFile = File(...)):
         if img is None:
             return {"status": 400, "message": "Invalid image", "data": {}}
 
-        # Convert to PIL and resize
-        original_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        original_pil = resize_image(original_pil)
-
-        # Number plate detection (OpenCV)
+        # 1️⃣ Extract number plate
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         blur = cv2.bilateralFilter(gray, 11, 17, 17)
         edged = cv2.Canny(blur, 30, 200)
@@ -100,34 +92,41 @@ async def process_image(file: UploadFile = File(...)):
                 break
 
         if plate_area is None:
+            del img
+            gc.collect()
             return {"status": 400, "message": "Number plate not detected", "data": {}}
 
         x, y, w, h = cv2.boundingRect(plate_area)
         plate_crop = img[y:y+h, x:x+w]
+        del img, gray, blur, edged, cnts  # free memory
+        gc.collect()
+
         plate_pil = Image.fromarray(cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB))
         plate_pil = resize_image(plate_pil)
+        del plate_crop
+        gc.collect()
 
-        # Enhance images
+        # 2️⃣ Enhance plate
         sr = get_sr_model()
         enhanced_plate = enhance_image(plate_pil, sr)
-        enhanced_vehicle = enhance_image(original_pil, sr)
+        del plate_pil
+        gc.collect()
 
-        # OCR
+        # 3️⃣ OCR
         reader = get_ocr_reader()
-        plate_text = read_plate_text(plate_pil, reader)
+        plate_text = read_plate_text(enhanced_plate, reader)
 
-        # Convert to base64
+        # 4️⃣ Convert to base64 and free memory
+        plate_base64 = to_base64(enhanced_plate)
+        del enhanced_plate
+        gc.collect()
+
         response_data = {
-            "number_plate": to_base64(enhanced_plate),
-            "vehicle": to_base64(enhanced_vehicle),
+            "number_plate": plate_base64,
             "plate_text": plate_text
         }
 
-        # Free memory
-        del img, original_pil, plate_pil, plate_crop, enhanced_plate, enhanced_vehicle
-        gc.collect()
-
-        return {"status": 200, "message": "Image enhanced and text recognized", "data": response_data}
+        return {"status": 200, "message": "Number plate processed successfully", "data": response_data}
 
     except Exception as e:
         return {"status": 500, "message": f"Internal server error: {str(e)}", "data": {}}
